@@ -7,24 +7,25 @@ import cv2
 import pandas as pd
 import numpy as np
 import random
+import zipfile
+import sys
+import shutil
 from funcoes import *
 
 # diretório atual
 diretorio = os.getcwd()
-print(diretorio)
 
-# executado apenas uma vez
-criarDiretorio(diretorio, 'train', '0')
-criarDiretorio(diretorio, 'train', '1')
-criarDiretorio(diretorio, 'validation', '0')
-criarDiretorio(diretorio, 'validation', '1')
-
+## excluir as pastas ---- executado apenas uma vez
+# shutil.rmtree('test')
+# shutil.rmtree('train')
+# shutil.rmtree('validation')
+# # shutil.rmtree('logs-fit')
 
 # abrindo tabela de rótulos
-gx1 = pd.read_csv("gz2_hart16.csv", sep=',')
+gx1 = pd.read_csv("/content/drive/MyDrive/redes/gz2_hart16.csv", sep=',')
 
 # abrindo tabela do kaggle
-gx2 = pd.read_csv("gz2_filename_mapping.csv", sep=',')
+gx2 = pd.read_csv("/content/drive/MyDrive/redes/gz2_filename_mapping.csv", sep=',')
 
 # agrupando através do inner join
 gx = gx1.merge(gx2, how='inner')
@@ -38,10 +39,6 @@ img_end = glob(os.path.join('images','*.jpg'))
 
 # gerarando dataframe com os caminhos
 im = pd.DataFrame(img_end, columns=["images"])
-print(im)
-
-# corrigindo os caminhos
-im["images"] = im["images"].str.replace('\\', '/')
 
 # gerando caminho das imagens com o asset_id para comparação com imagens[images]
 gx['images'] = gx['asset_id'].map(lambda num: "images/" + str(num) + ".jpg")
@@ -53,44 +50,78 @@ gx = pd.merge(im, gx, how='inner', on='images')
 gx = gx[gx["gz2_class"] != "A"]
 
 # criando uma nova coluna com a classificação binária de elipcas [1] e espirais [0]
-gx['newclass'] = gx['gz2_class'].map(lambda num: 1 if 'E' in num else 0)
+gx['gz2_class'] = gx['gz2_class'].map(lambda rotulo: '0' if 'S' in rotulo else '1')
 
-# gx.to_csv("tabelafinal.csv")
-# gx = pd.read_csv("tabelafinal.csv", sep=',')
+rotulos = gx['gz2_class'].drop_duplicates()
+rotulos = sorted(rotulos)
 
-# carregando lista do caminho das imagens
-galaxias = list(gx['images'])
+gx.to_csv("tabelafinal.csv")
+gx = pd.read_csv("tabelafinal.csv", sep=',')
 
-# selecionando as linhas onde 'newclass' é igual a 0 e guardando as informações de 'images' em uma lista
-esp = gx.query('newclass == 0')
-spirals = list(esp['images'])
-print(spirals[:20])
+# criando diretórios
+for pasta in rotulos:
+  criarDiretorio(diretorio, 'train', pasta)
+  criarDiretorio(diretorio, 'test', pasta)
+  criarDiretorio(diretorio, 'validation', pasta)
 
-# randomizando vetor de caminhos das imagens
-random.shuffle(galaxias)
-
-# leitura/resize/gravação em diretórios separados
+# separação de imagens em pastas
 cont = 0
-for nome in galaxias:
-    img = cv2.imread(nome)
-    img = cv2.resize(img, dsize=(227, 227), interpolation=cv2.INTER_CUBIC)
+for r in rotulos:
+    r = f"'{r}'"
+    print(r)
+    listaImagensRotuladas = geradorListaRotulos(r)
+    random.shuffle(listaImagensRotuladas)
 
-    if cont < len(galaxias) * 0.9:
-        if nome in spirals:
-            print(f'{cont} | {nome} | treino - tipo: 0')
-            cv2.imwrite(os.path.join(f'{diretorio}/train/0', nome[7:]), img)
-            cont += 1
-        else:
-            print(f'{cont} | {nome} | treino - tipo: 1')
-            cv2.imwrite(os.path.join(f'{diretorio}/train/1', nome[7:]), img)
+    for nome in listaImagensRotuladas:
+        img = cv2.imread(nome)
+        img = cv2.resize(img, dsize=(299, 299), interpolation=cv2.INTER_CUBIC)
+
+        if cont < len(listaImagensRotuladas) * 0.7:
+            print(f'{cont} | {nome} | treino - tipo: {r}')
+            cv2.imwrite(os.path.join(f'train/{r}', nome[7:]), img)
             cont += 1
 
-    else:
-        if nome in spirals:
-            print(f'{cont} | {nome} | validação - tipo: 0')
-            cv2.imwrite(os.path.join(f'{diretorio}/validation/0', nome[7:]), img)
+        elif len(listaImagensRotuladas) * 0.7 < cont <= len(listaImagensRotuladas) * 0.9:
+            print(f'{cont} | {nome} | teste - tipo: {r}')
+            cv2.imwrite(os.path.join(f'test/{r}', nome[7:]), img)
             cont += 1
+
         else:
-            print(f'{cont} | {nome} | validação - tipo: 1')
-            cv2.imwrite(os.path.join(f'{diretorio}/validation/1', nome[7:]), img)
+            print(f'{cont} | {nome} | validação - tipo: {r}')
+            cv2.imwrite(os.path.join(f'validation/{r}', nome[7:]), img)
             cont += 1
+
+
+directory_train = 'train'
+directory_test = 'test'
+directory_validation = 'validation'
+
+train_ds = separarParaTTV(directory_train, 299)
+test_ds = separarParaTTV(directory_test, 299)
+val_ds = separarParaTTV(directory_validation, 299)
+
+
+model = tf.keras.applications.InceptionV3(
+    include_top=True,
+    weights=None,
+    input_tensor=None,
+    input_shape=None,
+    pooling=None,
+    classes=1,
+    classifier_activation="softmax",
+)
+
+root_logdir = os.path.join(os.curdir, "logs-fit")
+
+def get_run_logdir():
+    run_id = time.strftime("run_%Y_%m_%d-%H_%M_%S")
+    return os.path.join(root_logdir, run_id)
+
+run_logdir = get_run_logdir()
+tensorboard_cb = keras.callbacks.TensorBoard(run_logdir)
+
+model.compile(loss='binary_crossentropy', optimizer=tf.optimizers.SGD(learning_rate=0.001), metrics=['accuracy'])
+model.summary()
+
+model.fit(train_ds, epochs=10, validation_data=val_ds, validation_freq=1, callbacks=[tensorboard_cb])
+model.evaluate(test_ds)
